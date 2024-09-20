@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import psycopg2
 
 def create_table_with_partitions(start_year, end_year, conn):

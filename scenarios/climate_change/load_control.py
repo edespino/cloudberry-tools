@@ -1,4 +1,6 @@
-iimport psycopg2
+#!/usr/bin/env python3
+
+import psycopg2
 import os
 
 # List of 10 CSV files for testing purposes
