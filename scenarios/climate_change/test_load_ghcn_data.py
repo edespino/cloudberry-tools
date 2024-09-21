@@ -2,11 +2,11 @@
 import psycopg2
 import os
 import csv
-from io import StringIO
+import shutil
 import argparse
 import subprocess
 import time
-from datetime import datetime, timedelta
+from datetime import timedelta
 import textwrap
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
@@ -41,22 +41,19 @@ def count_csv_records(file_path):
     with open(file_path, 'r') as file:
         return sum(1 for _ in csv.reader(file)) - 1  # Subtract 1 for header
 
-def get_first_n_rows(file_name, n):
-    buffer = StringIO()
-    with open(file_name, 'r') as file:
-        reader = csv.reader(file)
-        header = next(reader)  # Read the header
-        buffer.write(','.join(header) + '\n')  # Write the header to buffer
-        if n == -1:
-            for row in reader:
-                buffer.write(','.join(row) + '\n')
-        else:
-            for i, row in enumerate(reader):
-                if i >= n:
-                    break
-                buffer.write(','.join(row) + '\n')
-    buffer.seek(0)  # Reset the buffer position to the start
-    return buffer
+def create_gpfdist_directories(base_dir, num_servers):
+    dirs = []
+    for i in range(num_servers):
+        dir_path = os.path.join(base_dir, f'gpfdist_{i}')
+        os.makedirs(dir_path, exist_ok=True)
+        dirs.append(dir_path)
+    return dirs
+
+def distribute_files(file_list, gpfdist_dirs):
+    for i, file_path in enumerate(file_list):
+        target_dir = gpfdist_dirs[i % len(gpfdist_dirs)]
+        symlink_path = os.path.join(target_dir, os.path.basename(file_path))
+        os.symlink(file_path, symlink_path)
 
 def start_gpfdist(data_dir, port, verbose):
     log_file = 'gpfdist.log' if not verbose else None
@@ -93,9 +90,6 @@ def process_file(file_name, conn, gpfdist_ports, verbose, display_definition, de
     try:
         if debug:
             print(f"Started processing file: {file_name}")
-
-        if not gpfdist_ports:
-            raise ValueError("No gpfdist processes available")
 
         csv_record_count = count_csv_records(file_name)
         if verbose:
@@ -151,17 +145,13 @@ def process_file(file_name, conn, gpfdist_ports, verbose, display_definition, de
 
     except Exception as e:
         print(f"Error processing file {file_name}: {str(e)}")
-        conn.rollback()  # Rollback the transaction in case of error
+        conn.rollback()
         update_file_status(conn, file_name, 'FAILED', error_condition=str(e))
 
-def format_time(seconds):
-    return str(timedelta(seconds=int(seconds)))
-
-
-def optimized_load(conn, file_list, gpfdist_ports):
-    # Create a single external table for all files
-    ext_table_name = "ext_ghcn_all"
-    gpfdist_locations = ", ".join([f"'gpfdist://mdw:{port}/*.csv'" for port in gpfdist_ports])
+def batch_process(conn, gpfdist_dirs, gpfdist_ports, batch_size, verbose, display_definition, debug):
+    ext_table_name = "ext_ghcn_batch"
+    gpfdist_locations = [f"'gpfdist://mdw:{port}/*.csv'" for port in gpfdist_ports]
+    location_clause = ", ".join(gpfdist_locations)
 
     create_ext_table_sql = f"""
     CREATE EXTERNAL TABLE {ext_table_name} (
@@ -170,22 +160,38 @@ def optimized_load(conn, file_list, gpfdist_ports):
         element VARCHAR(10),
         value NUMERIC
     )
-    LOCATION ({gpfdist_locations})
+    LOCATION ({location_clause})
     FORMAT 'CSV' (HEADER)
     SEGMENT REJECT LIMIT 1 PERCENT;
     """
 
+    if display_definition:
+        print("\nExternal Table Definition:")
+        print(textwrap.dedent(create_ext_table_sql).strip())
+
     with conn.cursor() as cur:
         cur.execute(create_ext_table_sql)
 
-    # Load data in batches
-    batch_size = 1000000  # Adjust based on your system's capabilities
-    with conn.cursor() as cur:
-        cur.execute(f"INSERT INTO ghcn_daily_test SELECT * FROM {ext_table_name}")
+    if debug:
+        print(f"Created external table: {ext_table_name}")
+        print(f"Location clause: {location_clause}")
 
-    # Drop the external table
-    with conn.cursor() as cur:
-        cur.execute(f"DROP EXTERNAL TABLE {ext_table_name}")
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"INSERT INTO ghcn_daily_test SELECT * FROM {ext_table_name}")
+
+        if verbose:
+            print(f"Inserted data from external table into ghcn_daily_test")
+
+    finally:
+        with conn.cursor() as cur:
+            cur.execute(f"DROP EXTERNAL TABLE IF EXISTS {ext_table_name}")
+
+        if debug:
+            print(f"Dropped external table: {ext_table_name}")
+
+def format_time(seconds):
+    return str(timedelta(seconds=int(seconds)))
 
 def main():
     parser = argparse.ArgumentParser(description='Process GHCN data files.')
@@ -195,17 +201,28 @@ def main():
     parser.add_argument('-d', '--debug', action='store_true', help='Enable debug output')
     parser.add_argument('--display-definition', action='store_true', help='Display external table definition')
     parser.add_argument('-p', '--progress', action='store_true', help='Display progress bar')
+    parser.add_argument('-b', '--batch', action='store_true', help='Enable batch processing')
+    parser.add_argument('--batch-size', type=int, default=1000, help='Batch size for processing when using batch mode')
     args = parser.parse_args()
 
     conn = psycopg2.connect("dbname=climate_analysis user=gpadmin host=mdw")
-    data_dir = '/home/gpadmin/data/ghcnd_all/processed_ghcn'
+    base_data_dir = '/home/gpadmin/data/ghcnd_all/processed_ghcn'
+    work_dir = '/home/gpadmin/data/ghcnd_all/work_dir'
 
     gpfdist_processes = []
     gpfdist_ports = []
+    gpfdist_dirs = []
+
     try:
+        if args.batch:
+            # Create working directories for gpfdist
+            gpfdist_dirs = create_gpfdist_directories(work_dir, args.g)
+
+        # Start gpfdist processes
         for i in range(args.g):
             port = 8081 + i
-            process = start_gpfdist(data_dir, port, args.verbose)
+            dir_path = gpfdist_dirs[i] if args.batch else base_data_dir
+            process = start_gpfdist(dir_path, port, args.verbose)
             if process:
                 gpfdist_processes.append(process)
                 gpfdist_ports.append(port)
@@ -218,37 +235,65 @@ def main():
 
         start_time = time.time()
         files_processed = 0
+        total_records = 0
 
-        with ThreadPoolExecutor(max_workers=args.g) as executor:
-            futures = []
-
-            pbar = tqdm(total=args.n, disable=not args.progress)
-
+        if args.batch:
             while files_processed < args.n:
-                files = get_next_files(conn, min(args.g, args.n - files_processed))
+                # Get next batch of files
+                files = get_next_files(conn, min(args.batch_size, args.n - files_processed))
                 if not files:
                     print("No more files to process.")
                     break
 
+                # Distribute files across gpfdist directories
+                distribute_files(files, gpfdist_dirs)
+
+                # Process the batch
+                batch_process(conn, gpfdist_dirs, gpfdist_ports, args.batch_size, args.verbose, args.display_definition, args.debug)
+
+                # Update file statuses
                 for file_name in files:
-                    if files_processed >= args.n:
+                    update_file_status(conn, file_name, 'COMPLETED')
+
+                files_processed += len(files)
+
+                # Clean up symlinks
+                for dir_path in gpfdist_dirs:
+                    for file_name in os.listdir(dir_path):
+                        os.unlink(os.path.join(dir_path, file_name))
+
+                if args.verbose:
+                    print(f"Processed {files_processed} files so far.")
+        else:
+            with ThreadPoolExecutor(max_workers=args.g) as executor:
+                futures = []
+
+                pbar = tqdm(total=args.n, disable=not args.progress)
+
+                while files_processed < args.n:
+                    files = get_next_files(conn, min(args.g, args.n - files_processed))
+                    if not files:
+                        print("No more files to process.")
                         break
-                    futures.append(executor.submit(process_file, file_name, conn, gpfdist_ports, args.verbose, args.display_definition, args.debug))
-                    files_processed += 1
 
-                # Wait for all futures to complete
-                for future in as_completed(futures):
-                    future.result()
-                    if args.progress:
-                        pbar.update(1)
+                    for file_name in files:
+                        if files_processed >= args.n:
+                            break
+                        futures.append(executor.submit(process_file, file_name, conn, gpfdist_ports, args.verbose, args.display_definition, args.debug))
+                        files_processed += 1
 
-            if args.progress:
-                pbar.close()
+                    for future in as_completed(futures):
+                        future.result()
+                        if args.progress:
+                            pbar.update(1)
+
+                if args.progress:
+                    pbar.close()
 
         end_time = time.time()
         elapsed_time = end_time - start_time
 
-        # Get total record count in ghcn_daily_test
+        # Get total record count
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM ghcn_daily_test")
             total_records = cur.fetchone()[0]
@@ -265,7 +310,14 @@ def main():
     except Exception as e:
         print(f"An error occurred: {str(e)}")
     finally:
+        # Stop gpfdist processes
         stop_gpfdist(gpfdist_processes)
+
+        # Clean up work directories if batch mode was used
+        if args.batch:
+            for dir_path in gpfdist_dirs:
+                shutil.rmtree(dir_path, ignore_errors=True)
+
         conn.close()
 
 if __name__ == "__main__":
