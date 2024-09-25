@@ -17,13 +17,20 @@ def process_dly_file(file_path):
             year = int(line[11:15])
             month = int(line[15:17])
             element = line[17:21]
+            # Each day has a value, MFLAG, QFLAG, SFLAG (8 characters per day)
             for day in range(31):
                 value = int(line[21+day*8:26+day*8])
-                if value != -9999:  # -9999 indicates missing data
-                    date = f"{year}-{month:02d}-{day+1:02d}"
-                    data.append([station_id, date, element, value])
+                mflag = line[26+day*8:27+day*8].strip()
+                qflag = line[27+day*8:28+day*8].strip()
+                sflag = line[28+day*8:29+day*8].strip()
 
-        df = pd.DataFrame(data, columns=['station_id', 'date', 'element', 'value'])
+                if value != -9999:  # -9999 indicates missing data
+                    # Only create a record if the day exists (handle shorter months)
+                    if day + 1 <= 31:
+                        date = f"{year}-{month:02d}-{day+1:02d}"
+                        data.append([station_id, observation_date, element, value, mflag, qflag, sflag])
+
+        df = pd.DataFrame(data, columns=['station_id', 'observation_date', 'element', 'value', 'mflag', 'qflag', 'sflag'])
         output_file = os.path.join(output_dir, f"{os.path.splitext(os.path.basename(file_path))[0]}.csv")
         df.to_csv(output_file, index=False)
         return True

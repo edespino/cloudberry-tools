@@ -27,13 +27,16 @@ def create_table_with_partitions(start_year, end_year, conn):
     # SQL to create the table with all partitions, including the default partition
     create_table_sql = f"""
     CREATE TABLE ghcn_daily_test (
-        station_id VARCHAR(20),
-        measurement_date DATE,
-        element VARCHAR(10),
-        value NUMERIC
+        station_id CHAR(11),
+        observation_date DATE,
+        element CHAR(4),
+        value NUMERIC,
+        mflag CHAR(1),
+        qflag CHAR(1),
+        sflag CHAR(1)
     )
     DISTRIBUTED BY (station_id)  -- Choose an appropriate distribution key
-    PARTITION BY RANGE (measurement_date) (
+    PARTITION BY RANGE (observation_date) (
         {partitions_sql}
     );
     """
@@ -51,7 +54,7 @@ def main():
         drop_table_if_exists(conn)
 
         # Generate the table and partitions from 1954 to 2024, with a default partition
-        create_table_with_partitions(1954, 2024, conn)
+        create_table_with_partitions(1750, 2024, conn)
     finally:
         conn.close()
 
