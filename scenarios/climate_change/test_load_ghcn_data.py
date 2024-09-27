@@ -101,9 +101,12 @@ def process_file(file_name, conn, gpfdist_ports, verbose, display_definition, de
         external_table_definition = f"""
         CREATE EXTERNAL TABLE {table_name} (
             station_id VARCHAR(20),
-            measurement_date DATE,
-            element VARCHAR(10),
-            value NUMERIC
+            observation_date DATE,
+            element CHAR(4),
+            value NUMERIC,
+            mflag VARCHAR(1),
+            qflag VARCHAR(1),
+            sflag VARCHAR(1)
         )
         LOCATION ({gpfdist_locations})
         FORMAT 'CSV' (HEADER)
@@ -156,9 +159,12 @@ def batch_process(conn, gpfdist_dirs, gpfdist_ports, batch_size, verbose, displa
     create_ext_table_sql = f"""
     CREATE EXTERNAL TABLE {ext_table_name} (
         station_id VARCHAR(20),
-        measurement_date DATE,
-        element VARCHAR(10),
-        value NUMERIC
+        observation_date DATE,
+        element CHAR(4),
+        value NUMERIC,
+        mflag VARCHAR(1),
+        qflag VARCHAR(1),
+        sflag VARCHAR(1)
     )
     LOCATION ({location_clause})
     FORMAT 'CSV' (HEADER)

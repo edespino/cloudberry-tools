@@ -27,7 +27,7 @@ def process_dly_file(file_path):
                 if value != -9999:  # -9999 indicates missing data
                     # Only create a record if the day exists (handle shorter months)
                     if day + 1 <= 31:
-                        date = f"{year}-{month:02d}-{day+1:02d}"
+                        observation_date = f"{year}-{month:02d}-{day+1:02d}"
                         data.append([station_id, observation_date, element, value, mflag, qflag, sflag])
 
         df = pd.DataFrame(data, columns=['station_id', 'observation_date', 'element', 'value', 'mflag', 'qflag', 'sflag'])
