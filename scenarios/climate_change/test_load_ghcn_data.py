@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 import psycopg2
 import os
 import csv
@@ -220,11 +221,11 @@ def main():
     gpfdist_dirs = []
 
     try:
+        # Progress: Starting gpfdist processes
+        print("Starting gpfdist processes...")
         if args.batch:
-            # Create working directories for gpfdist
             gpfdist_dirs = create_gpfdist_directories(work_dir, args.g)
 
-        # Start gpfdist processes
         for i in range(args.g):
             port = 8081 + i
             dir_path = gpfdist_dirs[i] if args.batch else base_data_dir
@@ -232,6 +233,7 @@ def main():
             if process:
                 gpfdist_processes.append(process)
                 gpfdist_ports.append(port)
+                print(f"Started gpfdist on port {port}")
             else:
                 print(f"Failed to start gpfdist on port {port}")
 
@@ -243,70 +245,65 @@ def main():
         files_processed = 0
         total_records = 0
 
+        # Progress: Main processing loop
+        print(f"Beginning to process {args.n} files...")
         if args.batch:
-            while files_processed < args.n:
-                # Get next batch of files
-                files = get_next_files(conn, min(args.batch_size, args.n - files_processed))
-                if not files:
-                    print("No more files to process.")
-                    break
-
-                # Distribute files across gpfdist directories
-                distribute_files(files, gpfdist_dirs)
-
-                # Process the batch
-                batch_process(conn, gpfdist_dirs, gpfdist_ports, args.batch_size, args.verbose, args.display_definition, args.debug)
-
-                # Update file statuses
-                for file_name in files:
-                    update_file_status(conn, file_name, 'COMPLETED')
-
-                files_processed += len(files)
-
-                # Clean up symlinks
-                for dir_path in gpfdist_dirs:
-                    for file_name in os.listdir(dir_path):
-                        os.unlink(os.path.join(dir_path, file_name))
-
-                if args.verbose:
-                    print(f"Processed {files_processed} files so far.")
-        else:
-            with ThreadPoolExecutor(max_workers=args.g) as executor:
-                futures = []
-
-                pbar = tqdm(total=args.n, disable=not args.progress)
-
+            with tqdm(total=args.n, disable=not args.progress, desc="Batch Progress") as pbar:
                 while files_processed < args.n:
-                    files = get_next_files(conn, min(args.g, args.n - files_processed))
+                    files = get_next_files(conn, min(args.batch_size, args.n - files_processed))
                     if not files:
                         print("No more files to process.")
                         break
 
+                    print(f"Processing batch of {len(files)} files...")
+                    distribute_files(files, gpfdist_dirs)
+                    batch_process(conn, gpfdist_dirs, gpfdist_ports, args.batch_size, args.verbose, args.display_definition, args.debug)
+
                     for file_name in files:
-                        if files_processed >= args.n:
+                        update_file_status(conn, file_name, 'COMPLETED')
+
+                    files_processed += len(files)
+                    pbar.update(len(files))
+
+                    for dir_path in gpfdist_dirs:
+                        for file_name in os.listdir(dir_path):
+                            os.unlink(os.path.join(dir_path, file_name))
+
+                    if args.verbose:
+                        print(f"Processed {files_processed} files so far.")
+        else:
+            with ThreadPoolExecutor(max_workers=args.g) as executor:
+                futures = []
+                with tqdm(total=args.n, disable=not args.progress, desc="File Progress") as pbar:
+                    while files_processed < args.n:
+                        files = get_next_files(conn, min(args.g, args.n - files_processed))
+                        if not files:
+                            print("No more files to process.")
                             break
-                        futures.append(executor.submit(process_file, file_name, conn, gpfdist_ports, args.verbose, args.display_definition, args.debug))
-                        files_processed += 1
 
-                    for future in as_completed(futures):
-                        future.result()
-                        if args.progress:
+                        for file_name in files:
+                            if files_processed >= args.n:
+                                break
+                            futures.append(executor.submit(process_file, file_name, conn, gpfdist_ports, args.verbose, args.display_definition, args.debug))
+                            files_processed += 1
+
+                        for future in as_completed(futures):
+                            future.result()
                             pbar.update(1)
-
-                if args.progress:
-                    pbar.close()
 
         end_time = time.time()
         elapsed_time = end_time - start_time
 
-        # Get total record count
+        # Progress: Final statistics
+        print("\nCalculating final statistics...")
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM ghcn_daily_test")
             total_records = cur.fetchone()[0]
 
-        print(f"All requested files processed. Total files: {files_processed}")
+        print(f"\nProcessing complete!")
+        print(f"Total files processed: {files_processed}")
         print(f"Total records in ghcn_daily_test: {total_records}")
-        print(f"Elapsed time: {format_time(elapsed_time)}")
+        print(f"Total elapsed time: {format_time(elapsed_time)}")
         if files_processed > 0:
             avg_time_per_file = elapsed_time / files_processed
             print(f"Average time per file: {format_time(avg_time_per_file)}")
@@ -316,15 +313,16 @@ def main():
     except Exception as e:
         print(f"An error occurred: {str(e)}")
     finally:
-        # Stop gpfdist processes
+        # Progress: Cleanup
+        print("\nCleaning up...")
         stop_gpfdist(gpfdist_processes)
 
-        # Clean up work directories if batch mode was used
         if args.batch:
             for dir_path in gpfdist_dirs:
                 shutil.rmtree(dir_path, ignore_errors=True)
 
         conn.close()
+        print("Cleanup complete.")
 
 if __name__ == "__main__":
     main()
