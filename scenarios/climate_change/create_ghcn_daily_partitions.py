@@ -31,10 +31,11 @@ def create_table_with_partitions(start_year, end_year, conn):
         observation_date DATE,
         element CHAR(4),
         value NUMERIC,
-        mflag CHAR(1),
-        qflag CHAR(1),
-        sflag CHAR(1)
+        mflag VCHAR(1),
+        qflag VCHAR(1),
+        sflag VCHAR(1)
     )
+    WITH (appendonly=true, orientation=column)  -- Column-oriented, append-only table
     DISTRIBUTED BY (station_id)  -- Choose an appropriate distribution key
     PARTITION BY RANGE (observation_date) (
         {partitions_sql}
