@@ -80,6 +80,88 @@ PARTITION BY RANGE (timestamp_col1)
 );
 """.format(column_definitions)
 
+def create_indexes_sql():
+    return """
+-- Function to check if an index exists
+CREATE OR REPLACE FUNCTION index_exists(idx_name text) RETURNS boolean AS $$
+DECLARE
+  exists boolean;
+BEGIN
+  SELECT INTO exists COUNT(*) > 0 FROM pg_class WHERE relname = idx_name;
+  RETURN exists;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Timestamp Index (already part of the primary key, but adding for completeness)
+DO $$
+BEGIN
+  IF NOT index_exists('idx_win_logs_timestamp') THEN
+    CREATE INDEX idx_win_logs_timestamp ON win_logs (timestamp_col1);
+  END IF;
+END $$;
+
+-- Composite Index on timestamp and text_col1
+DO $$
+BEGIN
+  IF NOT index_exists('idx_win_logs_timestamp_text') THEN
+    CREATE INDEX idx_win_logs_timestamp_text ON win_logs (timestamp_col1, text_col1);
+  END IF;
+END $$;
+
+-- Bitmap Indexes on boolean columns
+DO $$
+BEGIN
+  IF NOT index_exists('idx_win_logs_boolean1') THEN
+    CREATE INDEX idx_win_logs_boolean1 ON win_logs USING bitmap (boolean_col1);
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT index_exists('idx_win_logs_boolean2') THEN
+    CREATE INDEX idx_win_logs_boolean2 ON win_logs USING bitmap (boolean_col2);
+  END IF;
+END $$;
+
+-- GIN Index for Text Search on text_col1
+DO $$
+BEGIN
+  IF NOT index_exists('idx_win_logs_text_gin') THEN
+    CREATE INDEX idx_win_logs_text_gin ON win_logs USING gin (to_tsvector('english', text_col1));
+  END IF;
+END $$;
+
+-- Partial Index on int_col1 for values > 1000
+DO $$
+BEGIN
+  IF NOT index_exists('idx_win_logs_partial') THEN
+    CREATE INDEX idx_win_logs_partial ON win_logs (int_col1) WHERE int_col1 > 1000;
+  END IF;
+END $$;
+
+-- Expression Index for extracting year from timestamp_col1
+DO $$
+BEGIN
+  IF NOT index_exists('idx_win_logs_extract_year') THEN
+    CREATE INDEX idx_win_logs_extract_year ON win_logs ((EXTRACT(YEAR FROM timestamp_col1)));
+  END IF;
+END $$;
+
+-- B-tree Index on text_col1 for equality searches
+DO $$
+BEGIN
+  IF NOT index_exists('idx_win_logs_text1_btree') THEN
+    CREATE INDEX idx_win_logs_text1_btree ON win_logs (text_col1);
+  END IF;
+END $$;
+
+-- Analyze the table to update statistics
+ANALYZE win_logs;
+
+-- Drop the helper function
+DROP FUNCTION IF EXISTS index_exists(text);
+"""
+
 def generate_test_data_chunk(chunk_size, chunk_number=None):
     data = []
     for _ in range(chunk_size):
@@ -170,6 +252,89 @@ FROM (
 ORDER BY sort_order, partition_name;
 """
 
+def create_partition_count_query():
+    return """
+WITH partition_counts AS (
+    SELECT 'beeswax_1_prt_y2024m01'::TEXT as partition_name, COUNT(*) as row_count FROM ONLY beeswax_1_prt_y2024m01
+    UNION ALL
+    SELECT 'beeswax_1_prt_y2024m02'::TEXT, COUNT(*) FROM ONLY beeswax_1_prt_y2024m02
+    UNION ALL
+    SELECT 'beeswax_1_prt_y2024m03'::TEXT, COUNT(*) FROM ONLY beeswax_1_prt_y2024m03
+    UNION ALL
+    SELECT 'beeswax_1_prt_y2024m04'::TEXT, COUNT(*) FROM ONLY beeswax_1_prt_y2024m04
+    UNION ALL
+    SELECT 'beeswax_1_prt_y2024m05'::TEXT, COUNT(*) FROM ONLY beeswax_1_prt_y2024m05
+    UNION ALL
+    SELECT 'beeswax_1_prt_y2024m06'::TEXT, COUNT(*) FROM ONLY beeswax_1_prt_y2024m06
+    UNION ALL
+    SELECT 'beeswax_1_prt_y2024m07'::TEXT, COUNT(*) FROM ONLY beeswax_1_prt_y2024m07
+    UNION ALL
+    SELECT 'beeswax_1_prt_y2024m08'::TEXT, COUNT(*) FROM ONLY beeswax_1_prt_y2024m08
+    UNION ALL
+    SELECT 'beeswax_1_prt_y2024m09'::TEXT, COUNT(*) FROM ONLY beeswax_1_prt_y2024m09
+    UNION ALL
+    SELECT 'beeswax_1_prt_y2024m10'::TEXT, COUNT(*) FROM ONLY beeswax_1_prt_y2024m10
+    UNION ALL
+    SELECT 'beeswax_1_prt_y2024m11'::TEXT, COUNT(*) FROM ONLY beeswax_1_prt_y2024m11
+    UNION ALL
+    SELECT 'beeswax_1_prt_y2024m12'::TEXT, COUNT(*) FROM ONLY beeswax_1_prt_y2024m12
+),
+total_count AS (
+    SELECT 'TOTAL'::TEXT as partition_name, SUM(row_count) as row_count
+    FROM partition_counts
+)
+SELECT partition_name, row_count
+FROM (
+    SELECT partition_name, row_count, 1 as sort_order
+    FROM partition_counts
+    UNION ALL
+    SELECT partition_name, row_count, 2 as sort_order
+    FROM total_count
+) subquery
+ORDER BY sort_order, partition_name;
+"""
+
+def create_cardinality_analysis_sql():
+    return """
+-- Function to get column cardinality
+CREATE OR REPLACE FUNCTION get_column_cardinality(table_name text, column_name text)
+RETURNS TABLE(total_rows bigint, distinct_values bigint, cardinality_ratio numeric) AS $$
+BEGIN
+    RETURN QUERY EXECUTE format('
+        WITH stats AS (
+            SELECT COUNT(*) AS total_rows,
+                   COUNT(DISTINCT %I) AS distinct_values
+            FROM %I
+        )
+        SELECT total_rows,
+               distinct_values,
+               (distinct_values::numeric / total_rows::numeric) AS cardinality_ratio
+        FROM stats
+    ', column_name, table_name);
+END;
+$$ LANGUAGE plpgsql;
+
+-- Analyze cardinality for specific columns
+SELECT 'boolean_col1' AS column_name, * FROM get_column_cardinality('win_logs', 'boolean_col1');
+SELECT 'boolean_col2' AS column_name, * FROM get_column_cardinality('win_logs', 'boolean_col2');
+SELECT 'text_col1' AS column_name, * FROM get_column_cardinality('win_logs', 'text_col1');
+SELECT 'int_col1' AS column_name, * FROM get_column_cardinality('win_logs', 'int_col1');
+
+-- Analyze cardinality for all columns (this might take a while for a large table)
+SELECT column_name, *
+FROM (
+    SELECT column_name::text,
+           (get_column_cardinality('win_logs', column_name::text)).*
+    FROM information_schema.columns
+    WHERE table_name = 'win_logs'
+) subquery
+ORDER BY cardinality_ratio ASC
+LIMIT 10;  -- Show top 10 lowest cardinality columns
+
+-- Drop the helper function
+DROP FUNCTION IF EXISTS get_column_cardinality(text, text);
+"""
+
 def main():
     parser = argparse.ArgumentParser(description=u"Generate SQL files for Greenplum win_logs table creation, data insertion, and partition counting")
     parser.add_argument(u"--output-dir", required=True, help=u"Output directory for SQL files")
@@ -184,6 +349,14 @@ def main():
     # Create table SQL
     with open(os.path.join(args.output_dir, 'create_table.sql'), 'w') as f:
         f.write(create_table_sql())
+
+    # Create indexes SQL
+    with open(os.path.join(args.output_dir, 'create_tailored_indexes_compatible.sql'), 'w') as f:
+        f.write(create_indexes_sql())
+
+    # Create cardinality analysis SQL
+    with open(os.path.join(args.output_dir, 'analyze_cardinality.sql'), 'w') as f:
+        f.write(create_cardinality_analysis_sql())
 
     # Generate test data for COPY using multiprocessing
     chunk_size = args.test_data // args.cores
@@ -223,7 +396,9 @@ def main():
     print(u"To create the table and load data:")
     print(u"1. Run: psql -f {0}/create_table.sql -d your_database_name".format(args.output_dir))
     print(u"2. Run: psql -f {0}/copy_data.sql -d your_database_name".format(args.output_dir))
-    print(u"3. To check partition counts, run: psql -f {0}/partition_count.sql -d your_database_name".format(args.output_dir))
+    print(u"3. Run: psql -f {0}/create_tailored_indexes_compatible.sql -d your_database_name".format(args.output_dir))
+    print(u"4. To check partition counts, run: psql -f {0}/partition_count.sql -d your_database_name".format(args.output_dir))
+    print(u"5. To check cardinality counts, run: psql -f {0}/analyze_cardinality.sql -d your_database_name".format(args.output_dir))
 
 if __name__ == u"__main__":
     main()
