@@ -252,48 +252,6 @@ FROM (
 ORDER BY sort_order, partition_name;
 """
 
-def create_partition_count_query():
-    return """
-WITH partition_counts AS (
-    SELECT 'beeswax_1_prt_y2024m01'::TEXT as partition_name, COUNT(*) as row_count FROM ONLY beeswax_1_prt_y2024m01
-    UNION ALL
-    SELECT 'beeswax_1_prt_y2024m02'::TEXT, COUNT(*) FROM ONLY beeswax_1_prt_y2024m02
-    UNION ALL
-    SELECT 'beeswax_1_prt_y2024m03'::TEXT, COUNT(*) FROM ONLY beeswax_1_prt_y2024m03
-    UNION ALL
-    SELECT 'beeswax_1_prt_y2024m04'::TEXT, COUNT(*) FROM ONLY beeswax_1_prt_y2024m04
-    UNION ALL
-    SELECT 'beeswax_1_prt_y2024m05'::TEXT, COUNT(*) FROM ONLY beeswax_1_prt_y2024m05
-    UNION ALL
-    SELECT 'beeswax_1_prt_y2024m06'::TEXT, COUNT(*) FROM ONLY beeswax_1_prt_y2024m06
-    UNION ALL
-    SELECT 'beeswax_1_prt_y2024m07'::TEXT, COUNT(*) FROM ONLY beeswax_1_prt_y2024m07
-    UNION ALL
-    SELECT 'beeswax_1_prt_y2024m08'::TEXT, COUNT(*) FROM ONLY beeswax_1_prt_y2024m08
-    UNION ALL
-    SELECT 'beeswax_1_prt_y2024m09'::TEXT, COUNT(*) FROM ONLY beeswax_1_prt_y2024m09
-    UNION ALL
-    SELECT 'beeswax_1_prt_y2024m10'::TEXT, COUNT(*) FROM ONLY beeswax_1_prt_y2024m10
-    UNION ALL
-    SELECT 'beeswax_1_prt_y2024m11'::TEXT, COUNT(*) FROM ONLY beeswax_1_prt_y2024m11
-    UNION ALL
-    SELECT 'beeswax_1_prt_y2024m12'::TEXT, COUNT(*) FROM ONLY beeswax_1_prt_y2024m12
-),
-total_count AS (
-    SELECT 'TOTAL'::TEXT as partition_name, SUM(row_count) as row_count
-    FROM partition_counts
-)
-SELECT partition_name, row_count
-FROM (
-    SELECT partition_name, row_count, 1 as sort_order
-    FROM partition_counts
-    UNION ALL
-    SELECT partition_name, row_count, 2 as sort_order
-    FROM total_count
-) subquery
-ORDER BY sort_order, partition_name;
-"""
-
 def create_cardinality_analysis_sql():
     return """
 -- Function to get column cardinality
