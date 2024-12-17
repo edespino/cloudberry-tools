@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
+
 import psycopg2
 import os
 import argparse
+from tqdm import tqdm  # Import tqdm for progress bar
 
 def get_csv_files(directory):
     """
@@ -46,7 +48,8 @@ def setup_control_table(conn):
 
 def insert_csv_files(conn, csv_files):
     with conn.cursor() as cur:
-        for file_name in csv_files:
+        # Use tqdm for progress bar
+        for file_name in tqdm(csv_files, desc="Inserting CSV files", unit="file"):
             cur.execute("""
                 INSERT INTO ghcn_load_control_test (file_name, status)
                 VALUES (%s, 'PENDING');
@@ -87,7 +90,7 @@ def main():
             csv_directory = '/home/gpadmin/data/ghcnd_all/processed_ghcn'
             csv_files = get_csv_files(csv_directory)
 
-            # Insert CSV files into the control table
+            # Insert CSV files into the control table with a progress bar
             insert_csv_files(conn, csv_files)
             print(f"Inserted {len(csv_files)} CSV files into ghcn_load_control_test.")
     finally:
