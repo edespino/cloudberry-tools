@@ -1,0 +1,103 @@
+name: Cloudberry Debug Workflow
+on:
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        type: boolean
+        description: 'Enable tmate debugging session'
+        required: false
+        default: false
+      test_suite:
+        type: choice
+        description: 'Test suite to run'
+        options:
+          - all
+          - unit
+          - integration
+        required: true
+        default: 'unit'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    container:
+      ## image: apache/incubator-cloudberry:cbdb-build-rocky9-latest
+      image: rockylinux/rockylinux:9
+      options: >-
+        --user root
+        -h cdw
+
+    steps:
+      - name: Setup debug environment
+        if: ${{ inputs.debug_enabled }}
+        env:
+          TMATE_TOKEN: ${{ secrets.TMATE_TOKEN }}
+        run: |
+          # Install tmate based on OS
+          if command -v dnf >/dev/null 2>&1; then
+            dnf install -y -d0 epel-release
+            dnf install -y -d0 tmate
+          else
+            apt-get update && apt-get install -y tmate
+          fi
+
+          # Configure and start tmate session
+          tmate -S /tmp/tmate.sock new-session -d
+          tmate -S /tmp/tmate.sock wait tmate-ready
+
+          # Create a validation script
+          cat > /tmp/validate.sh << 'EOF'
+          #!/bin/bash
+          if [[ "${TMATE_VALIDATED:-0}" == "0" ]]; then
+            while true; do
+              read -p "Enter session token: " input_token
+              if [[ "$input_token" == "$TMATE_TOKEN" ]]; then
+                export TMATE_VALIDATED=1
+                break
+              else
+                echo "Invalid token. Please try again."
+              fi
+            done
+          fi
+          EOF
+          chmod +x /tmp/validate.sh
+
+          # Set the token and configure the session
+          tmate -S /tmp/tmate.sock send-keys "export TMATE_TOKEN='${TMATE_TOKEN}'" C-m
+          tmate -S /tmp/tmate.sock send-keys "export TMATE_VALIDATED=0" C-m
+          tmate -S /tmp/tmate.sock send-keys "echo '/tmp/validate.sh' >> ~/.bashrc" C-m
+          tmate -S /tmp/tmate.sock send-keys "echo '/tmp/validate.sh' >> ~/.profile" C-m
+          tmate -S /tmp/tmate.sock send-keys "/tmp/validate.sh" C-m
+
+          # Display connection information
+          echo "::group::Debug Session Information"
+          echo "SSH: $(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')"
+          echo "Web URL: $(tmate -S /tmp/tmate.sock display -p '#{tmate_web}')"
+          echo "You will be prompted for the token when connecting"
+          echo "To exit debug session and continue workflow: type 'exit' in the session"
+          echo "::endgroup::"
+
+          # Set 30-minute timeout
+          timeout 1800 bash -c \
+          'while true; do
+            sleep 5
+            if ! tmate -S /tmp/tmate.sock has-session; then
+              echo "Debug session ended, continuing workflow..."
+              exit 0
+            fi
+          done'
+
+      - name: Run Cloudberry tests
+        run: |
+          case "${{ inputs.test_suite }}" in
+            "unit")
+              make test-unit
+              ;;
+            "integration")
+              make test-integration
+              ;;
+            "all")
+              make test
+              ;;
+          esac
